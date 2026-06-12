@@ -1,5 +1,47 @@
 # MegaMind — AI Agent Guide
 
+## Team Git Workflow (CLI Agents)
+
+### Repo Info
+- **GitHub**: `https://github.com/Diluc27/megamind` (private)
+- **Main branch**: `main`
+- **Dev branch**: `dev`
+- **Worktree folder**: `C:\Users\Sm1th\megamind-dev` (on `dev`)
+
+### How To Work
+
+```bash
+# Clone the repo
+git clone https://github.com/Diluc27/megamind.git megamind
+cd megamind
+
+# If you want a separate worktree for your task:
+git worktree add ../megamind-TASK-NAME TASK-NAME
+cd ../megamind-TASK-NAME
+```
+
+### Branch Convention
+| Branch | Purpose |
+|--------|---------|
+| `main` | Stable/production. Do not commit directly. |
+| `dev` | Integration branch for active work. |
+| `fix/xxx` | Bug fix branches |
+| `feat/xxx` | Feature branches |
+| `chore/xxx` | Refactors, deps, CI |
+
+### Workflow
+1. **Create a branch** from `dev`: `git checkout dev; git checkout -b feat/my-thing`
+2. **Work and commit**: `git add -A; git commit -m "feat: my thing"`
+3. **Push**: `git push -u origin feat/my-thing`
+4. **Create a PR** on GitHub from `feat/my-thing` → `dev`
+5. Someone reviews and merges.
+
+### Rules
+- Never commit directly to `main` or `dev`.
+- Keep commits focused and messages clear.
+- Sync with `dev` before pushing: `git pull --rebase origin dev`.
+- If using a worktree, prune after deleting the folder: `git worktree prune`.
+
 ## Overview
 
 MegaMind is a local, Markdown-based knowledge management app.
