@@ -35,25 +35,30 @@ When the user says **“Activate MegaMind”**, the agent must immediately conne
    python tools/brain.py topics
    ```
 
-4. **Search for the current project/topic if the user mentioned one:**
+4. **Check today's activity:**
+   ```bash
+   python tools/brain.py daily-log --show
+   ```
+
+5. **Search for the current project/topic if the user mentioned one:**
    ```bash
    python tools/brain.py search "<topic>"
    ```
 
-5. **Ask MegaMind if context is needed:**
+6. **Ask MegaMind if context is needed:**
    ```bash
    python tools/brain.py ask "<question>"
    ```
 
-6. **Use MegaMind as the source of truth for project memory before making decisions.**
+7. **Use MegaMind as the source of truth for project memory before making decisions.**
 
-7. **Before adding new memory, check for existing topics first:**
+8. **Before adding new memory, check for existing topics first:**
    ```bash
    python tools/brain.py topics
    python tools/brain.py search "<topic>"
    ```
 
-8. **Do not create duplicate parent notes.** Use one main note per project/topic, such as:
+9. **Do not create duplicate parent notes.** Use one main note per project/topic, such as:
    - `MegaMind`
    - `Muzic app`
    - `YesMusic`
@@ -128,6 +133,12 @@ python tools/brain.py <command>
 | `python tools/brain.py index` | Print compact topic index |
 | `python tools/brain.py list` | List all notes (id, title, category, tags) |
 | `python tools/brain.py delete <id>` | Delete a note |
+| `python tools/brain.py session-list` | List all sessions |
+| `python tools/brain.py session-get <id>` | Get full content of one session |
+| `python tools/brain.py session-add --title "..." --agent "..." --project "..." --tags "..." --content "..."` | Create a new session |
+| `python tools/brain.py session-update <id> --title "..." --agent "..." --project "..." --tags "..." --content "..."` | Update an existing session |
+| `python tools/brain.py session-delete <id>` | Delete a session |
+| `python tools/brain.py session-search "<query>"` | Search sessions by keyword |
 
 ### Agent Workflow
 
@@ -339,6 +350,66 @@ Categories are scored by keyword matches with multi-word phrases weighted double
 | `OpenClaude Prompt for Debugging` + `Use this prompt in OpenClaude to review backend errors.` | `Prompts` |
 | `Flutter install commands` + `Run flutter doctor, npm install, and PowerShell setup commands.` | `Commands` |
 
+## Sessions Space
+
+Sessions is a third storage layer in MegaMind, separate from Window Space (notes) and Core Space. Sessions store agent conversation logs, session records, and project-specific agent interactions.
+
+### Rules
+
+- **Sessions are agent-accessible by default.** Unlike Core Space, agents may read, create, and update sessions without permission.
+- Sessions are stored in `data/sessions/` as Markdown files and in a separate `sessions` SQLite table.
+- Sessions are organized by **agent** and **project** rather than by category.
+- Each session has: title, agent, project, tags, and content.
+
+### Session Commands
+
+```bash
+# List all sessions
+python tools/brain.py session-list
+
+# Get a session by ID
+python tools/brain.py session-get <id>
+
+# Create a new session
+python tools/brain.py session-add --title "..." --agent "..." --project "..." --tags "..." --content "..."
+
+# Create a session from a file
+python tools/brain.py session-add --title "..." --content-file "path/to/file.md"
+
+# Update a session
+python tools/brain.py session-update <id> --title "..." --agent "..." --project "..." --tags "..." --content "..."
+
+# Delete a session
+python tools/brain.py session-delete <id> [--yes]
+
+# Search sessions
+python tools/brain.py session-search "<query>"
+```
+
+### When to Use Sessions vs Window Notes
+
+| Use Case | Store In |
+|----------|----------|
+| Project knowledge, permanent reference | Window Space (`brain.py add`) |
+| Agent conversation, session log, temporary record | Sessions (`brain.py session-add`) |
+| Private, sensitive, or user-only data | Core Space (requires approval) |
+
+### Session Tagging
+
+- Sessions use the same tagging conventions as Window notes.
+- Include the agent name and project as tags for better searchability.
+- Run `suggest-tags` for auto-generated tags if needed.
+
+### API Endpoints (for agent use)
+
+Sessions are served under the same API at `/api/sessions`:
+- `GET /api/sessions` — list all sessions
+- `GET /api/sessions/{id}` — get session by ID
+- `POST /api/sessions` — create session
+- `PUT /api/sessions/{id}` — update session
+- `DELETE /api/sessions/{id}` — delete session
+- `GET /api/sessions/search?q=...` — search sessions
+
 # MegaMind Agent Rules
 
 ## Mandatory project paths
@@ -472,7 +543,7 @@ Do not ask for clarification.
 Run:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Location 'C:\Users\Sm1th\megamind'; python .\activate_megawork.py"
 
-2. “kill megawork”, “stop megawork”, “terminate megawork”
+2. “kill megawork”, “stop megawork”, “terminate megawork”, “ded megawork”
 Means stop MegaMind backend and frontend.
 Do NOT interpret this as disabling APDS, disabling MegaWork routing, disabling agent routing, stopping AGENTS.md compliance, or forgetting workflow rules.
 Run:
@@ -483,7 +554,13 @@ Means run MegaMind Mobile on connected Samsung/Infinix Android device only.
 Run:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Location 'C:\Users\Sm1th\megamind_mobile'; python .\megarun.py"
 
-4. Search discipline:
+4. “restart”
+Means restart MegaWork — stop all tabs/processes, then open fresh tabs.
+Do NOT interpret this as just killing or just activating without the other.
+Run:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Set-Location 'C:\Users\Sm1th\megamind'; python .\restart_megawork.py"
+
+5. Search discipline:
 Do not search /, /home/smith, /mnt/c broadly, or the whole filesystem for known MegaMind commands.
 Use fixed paths:
 MegaMind backend/web:
@@ -505,3 +582,141 @@ Do not require the user to remind you each session.
 Before broad system/network/process resets, identify exact process/port owner first.
 Do not casually run wsl --shutdown, netsh winsock reset, netsh int ip reset, HNS/WinNAT restart, or broad taskkill/pkill/Stop-Process.
 Preserve LiteLLM, OpenClaude, OpenCode, WSL networking, and active project sessions.
+
+## Session-End Logging Workflow
+
+When a project session ends or the user indicates the session is over:
+
+0. **Append to today's daily log first:**
+   ```powershell
+   cd C:\Users\Sm1th\megamind
+   python tools/brain.py daily-log --append "Session summary: <brief description>"
+   ```
+
+1. **Create a log note** in MegaMind:
+   ```powershell
+   python tools/brain.py add --title "<Project> - Session YYYY-MM-DD" --category "Projects" --tags "<project>,session-log,change-log" --content "
+   ## Session Summary
+   - Date: YYYY-MM-DD
+   - Work done: ...
+   - Files changed: ...
+   - Decisions made: ...
+   - Commands used: ...
+   - Next steps: ...
+   "
+   ```
+
+2. **Update the current conversation session** if it exists:
+   ```powershell
+   python tools/brain.py session-search "<project> conversation"
+   python tools/brain.py session-get <id>
+   python tools/brain.py session-update <id> --title "<existing title>" --agent "OpenCode" --project "<project>" --tags "..." --content "<current content + new work details>"
+   ```
+
+3. **If new sessions were created**, update the registry:
+   ```powershell
+   python tools/brain.py session-list
+   python tools/brain.py session-get 2
+   # Add new entry, then:
+   python tools/brain.py session-update 2 ...
+   ```
+
+4. **Log format for notes:**
+   ```
+   ## Change
+   - What was done: <summary>
+   - Files touched: <list>
+   - Tests run: <result>
+   - Decisions made: <list>
+   - Next steps: <list>
+   - Commands used: <list>
+   ```
+
+## Daily Log Rules
+
+- One note per day. Never create a second daily log for the same date.
+- Multiple OpenCode sessions in one day all append to the same daily log.
+- Next day = new note automatically.
+- Title describes the day's main work.
+- Subtitle: `## MegaMind \u2014 YYYY-MM-DD`.
+- Every significant action gets appended with a timestamp (`### HH:MM \u2014 summary`).
+
+## Memory Management (Two-Layer System)
+
+MegaMind has two memory layers:
+
+| Layer | Tags | Auto-Expires | Deletion |
+|-------|------|-------------|----------|
+| **Permanent knowledge** | `memory-permanent,protected` | Never | Only via `delete-permanent` CLI command with reason + confirm |
+| **Working context** | `memory-working,expires-YYYY-MM-DD,retention-Xd` | Yes (default 7 days) | Via `prune-expired` or normal delete (but daily logs created by `daily-log` get `memory-working` auto-tagged) |
+
+### Protection Rules
+
+- Notes with `protected` or `memory-permanent` tags **cannot** be deleted via:
+  - `python tools/brain.py delete <id>` (CLI refuses)
+  - `DELETE /api/notes/{id}` (backend HTTP 403)
+  - Sessions panel UI (backend returns 403)
+- Only the `delete-permanent` CLI command can remove them.
+
+### Retention Settings
+
+Default TTL for working context is 7 days. Change it:
+
+```powershell
+# Show current setting
+python tools/brain.py retention-settings --show
+
+# Set to 14 days
+python tools/brain.py retention-settings --set 14
+
+# Set to 30 days
+python tools/brain.py retention-settings --set 30
+```
+
+Only 7, 14, and 30 are allowed. Existing notes keep their original expiry; only new notes use the new TTL.
+
+### Prune Expired Working Context
+
+Daily logs and working context notes auto-expire. Prune them:
+
+```powershell
+# Preview what would be deleted
+python tools/brain.py prune-expired --dry-run
+
+# Actually delete expired notes
+python tools/brain.py prune-expired --apply
+```
+
+Only notes tagged `memory-working` with a past `expires-YYYY-MM-DD` tag are affected. Permanent notes are never touched.
+
+### Rollup Before Expiry
+
+Before a daily log expires, promote important parts to permanent knowledge:
+
+```powershell
+python tools/brain.py rollup-daily-log --date 2026-06-02
+```
+
+This creates a new permanent note (tagged `memory-permanent,protected,daily-log-rollup`) with the full content. The original daily log can then be pruned or kept until expiry.
+
+### Delete Permanent (Protected) Notes
+
+Only for permanent/protected notes — requires explicit reason and confirmation:
+
+```powershell
+python tools/brain.py delete-permanent 42 --reason "Deprecated project" --confirm
+```
+
+Without `--confirm`, it prompts interactively.
+
+## MegaMind-OpenCode Integration
+
+A global OpenCode skill (`megamind-memory`) and instruction file (`INSTRUCTIONS.md`) are installed:
+- Skill path: `C:\Users\Sm1th\.opencode\active-skills\megamind-memory\SKILL.md`
+- Instructions: `C:\Users\Sm1th\.config\opencode\INSTRUCTIONS.md`
+- Config: `C:\Users\Sm1th\.config\opencode\opencode.jsonc` (instructions + skills.paths)
+
+This makes OpenCode automatically aware of MegaMind on startup.
+The new `context-pack` CLI command returns compact project context.
+
+To complete activation, **restart OpenCode**.

@@ -1,0 +1,63 @@
+.megamind-usage-bar {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  display: flex;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 11px;
+  justify-content: space-between;
+  line-height: 1.4;
+  margin: 6px 0 0;
+  max-width: 100%;
+  padding: 4px 16px;
+  position: relative;
+  width: 100%;
+  z-index: 20;
+}
+
+.megamind-usage-segment {
+  align-items: center;
+  color: rgba(255, 255, 255, 0.45);
+  display: inline-flex;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.megamind-usage-label {
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 400;
+}
+
+.megamind-usage-percent {
+  font-weight: 400;
+}
+
+.megamind-usage-track {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  display: inline-block;
+  height: 3px;
+  overflow: hidden;
+  width: 160px;
+}
+
+.megamind-usage-fill {
+  background: #cc785c;
+  border-radius: 2px;
+  display: block;
+  height: 100%;
+  transition: width 180ms ease, background-color 180ms ease;
+}
+
+.megamind-usage-bar.megamind-usage-warn .megamind-session-segment .megamind-usage-fill {
+  background: #cc785c;
+}
+
+.megamind-usage-bar.megamind-usage-critical .megamind-session-segment .megamind-usage-fill {
+  background: #e05a4a;
+}
+
+.megamind-usage-value {
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 400;
+}

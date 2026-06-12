@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MegaMind Claude Tracker</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup-shell">
+      <section class="panel live-panel" aria-labelledby="live-stats-title">
+        <div class="section-heading">
+          <h1 id="live-stats-title">Live Stats</h1>
+          <span id="summarize-pill" class="pill hidden">
+            <span class="spinner" aria-hidden="true"></span>
+            Summarizing
+          </span>
+        </div>
+
+        <dl class="stats-grid">
+          <div>
+            <dt>Account</dt>
+            <dd id="account-value">Unknown</dd>
+          </div>
+          <div>
+            <dt>Model</dt>
+            <dd id="model-value">Unknown</dd>
+          </div>
+          <div>
+            <dt>Session</dt>
+            <dd id="session-value">0% &middot; resets in unknown</dd>
+          </div>
+          <div>
+            <dt>Weekly</dt>
+            <dd id="weekly-value">0% &middot; resets in unknown</dd>
+          </div>
+          <div class="wide-stat">
+            <dt>MegaMind</dt>
+            <dd id="megamind-value"><span class="status-dot offline"></span> Checking</dd>
+          </div>
+        </dl>
+
+        <p id="offline-banner" class="offline-banner hidden">MegaMind Offline &mdash; cached tiles</p>
+
+        <button id="pause-button" class="pause-button" type="button">Pause Now</button>
+        <p id="status-message" class="status-message" role="status"></p>
+      </section>
+
+      <section class="panel summaries-panel" aria-labelledby="summaries-title">
+        <div class="section-heading">
+          <h2 id="summaries-title">Recent Summaries</h2>
+          <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
+        </div>
+
+        <div id="summary-list" class="summary-list"></div>
+        <p id="empty-state" class="empty-state hidden">No summaries yet. Use Pause Now or type synctomega in Claude.</p>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

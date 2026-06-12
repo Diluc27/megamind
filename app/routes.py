@@ -1,5 +1,6 @@
 import re
 import os
+import time
 import sqlite3
 import zipfile
 import hashlib
@@ -9,18 +10,21 @@ from io import BytesIO
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Header, Request
 from sqlalchemy.orm import Session
 from .database import get_db, DB_PATH
-from .models import Note
+from .models import Note, NotePage
 from .utils import (
     CATEGORIES, ensure_dirs, get_safe_filename, save_markdown,
-    read_markdown, delete_markdown, NOTES_DIR, DATA_DIR,
-    normalize_tags, build_markdown, extract_body, build_preview
+    read_markdown, delete_markdown, NOTES_DIR, DATA_DIR, BACKUPS_DIR,
+    normalize_tags, build_markdown, extract_body, build_preview,
+    is_protected
 )
 from .search import perform_search
+from .auth import require_api_key
 from pydantic import BaseModel, field_serializer
 from typing import List, Optional
 from datetime import datetime, timezone
 
 router = APIRouter()
+WINDOW_AUTH = [Depends(require_api_key)]
 
 class NoteBase(BaseModel):
     title: str
@@ -36,6 +40,7 @@ class NoteResponse(BaseModel):
     title: str
     category: Optional[str]
     tags: Optional[str]
+    source: Optional[str] = None
     file_path: Optional[str]
     content: str
     created_at: datetime
@@ -47,6 +52,26 @@ class NoteResponse(BaseModel):
     @field_serializer('created_at', 'updated_at')
     def serialize_dt(self, v: datetime) -> str:
         return serialize_note_timestamp(v)
+
+
+class NotePageBase(BaseModel):
+    title: str
+    tags: Optional[str] = None
+    content: str
+
+
+class NotePageResponse(BaseModel):
+    id: int
+    note_id: int
+    title: str
+    tags: Optional[str]
+    content: str
+    position: int
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
 
 class DuplicateNoteResponse(BaseModel):
     status: str
@@ -106,11 +131,34 @@ def note_response_dict(note, content):
         "title": note.title,
         "category": note.category,
         "tags": note.tags,
+        "source": note.source,
         "file_path": note.file_path,
         "content": content,
         "created_at": serialize_note_timestamp(note.created_at),
         "updated_at": serialize_note_timestamp(note.updated_at),
     }
+
+
+def note_page_response_dict(page):
+    return {
+        "id": page.id,
+        "note_id": page.note_id,
+        "title": page.title,
+        "tags": page.tags,
+        "content": page.content or "",
+        "position": page.position or 0,
+        "created_at": serialize_note_timestamp(page.created_at),
+        "updated_at": serialize_note_timestamp(page.updated_at),
+    }
+
+
+def add_permanent_tags(tags):
+    values = [t.strip() for t in (tags or "").split(",") if t.strip()]
+    lower = {t.lower() for t in values}
+    for tag in ["memory-permanent", "protected"]:
+        if tag not in lower:
+            values.append(tag)
+    return normalize_tags(",".join(values))
 
 
 def format_search_result(note, score, content):
@@ -120,6 +168,7 @@ def format_search_result(note, score, content):
         "title": note.title,
         "category": note.category,
         "tags": note.tags,
+        "source": note.source,
         "score": score,
         "preview": build_preview(body),
         "created_at": serialize_note_timestamp(note.created_at),
@@ -127,7 +176,7 @@ def format_search_result(note, score, content):
     }
 
 
-@router.post("/notes", response_model=NoteResponse | DuplicateNoteResponse)
+@router.post("/notes", response_model=NoteResponse | DuplicateNoteResponse, dependencies=WINDOW_AUTH)
 def create_note(note_data: NoteBase, db: Session = Depends(get_db)):
     validate_category(note_data.category)
     normalized_tags = normalize_tags(note_data.tags)
@@ -155,6 +204,7 @@ def create_note(note_data: NoteBase, db: Session = Depends(get_db)):
         title=note_data.title,
         category=note_data.category,
         tags=normalized_tags,
+        source=note_data.source,
         file_path="",
         created_at=created_at,
         updated_at=updated_at,
@@ -184,16 +234,16 @@ def create_note(note_data: NoteBase, db: Session = Depends(get_db)):
 
     return note_response_dict(db_note, note_data.content)
 
-@router.get("/notes", response_model=List[NoteResponse])
+@router.get("/notes", response_model=List[NoteResponse], dependencies=WINDOW_AUTH)
 def get_notes(db: Session = Depends(get_db)):
-    notes = db.query(Note).order_by(Note.updated_at.desc(), Note.id.desc()).all()
+    notes = db.query(Note).order_by(Note.created_at.desc(), Note.id.desc()).all()
     results = []
     for note in notes:
         content = extract_body(read_markdown(note.file_path))
         results.append(note_response_dict(note, content))
     return results
 
-@router.get("/notes/{id}", response_model=NoteResponse)
+@router.get("/notes/{id}", response_model=NoteResponse, dependencies=WINDOW_AUTH)
 def get_note(id: int, db: Session = Depends(get_db)):
     db_note = db.query(Note).filter(Note.id == id).first()
     if not db_note:
@@ -202,7 +252,92 @@ def get_note(id: int, db: Session = Depends(get_db)):
     content = extract_body(read_markdown(db_note.file_path))
     return note_response_dict(db_note, content)
 
-@router.put("/notes/{id}", response_model=NoteResponse)
+
+@router.get("/notes/{id}/pages", response_model=List[NotePageResponse], dependencies=WINDOW_AUTH)
+def list_note_pages(id: int, db: Session = Depends(get_db)):
+    db_note = db.query(Note).filter(Note.id == id).first()
+    if not db_note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    pages = db.query(NotePage).filter(NotePage.note_id == id).order_by(NotePage.position.asc(), NotePage.id.asc()).all()
+    return [note_page_response_dict(page) for page in pages]
+
+
+@router.post("/notes/{id}/pages", response_model=NotePageResponse, status_code=201, dependencies=WINDOW_AUTH)
+def create_note_page(id: int, page_data: NotePageBase, db: Session = Depends(get_db)):
+    db_note = db.query(Note).filter(Note.id == id).first()
+    if not db_note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    now_utc = datetime.utcnow()
+    position = db.query(NotePage).filter(NotePage.note_id == id).count() + 1
+    page = NotePage(
+        note_id=id,
+        title=page_data.title,
+        tags=normalize_tags(page_data.tags),
+        content=page_data.content,
+        position=position,
+        created_at=now_utc,
+        updated_at=now_utc,
+    )
+    db.add(page)
+    db.commit()
+    db.refresh(page)
+    return note_page_response_dict(page)
+
+
+@router.put("/notes/{id}/pages/{page_id}", response_model=NotePageResponse, dependencies=WINDOW_AUTH)
+def update_note_page(id: int, page_id: int, page_data: NotePageBase, db: Session = Depends(get_db)):
+    page = db.query(NotePage).filter(NotePage.id == page_id, NotePage.note_id == id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Note page not found")
+    if is_protected(page.tags):
+        raise HTTPException(status_code=403, detail="This note page is protected and cannot be edited.")
+    page.title = page_data.title
+    page.tags = normalize_tags(page_data.tags)
+    page.content = page_data.content
+    page.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(page)
+    return note_page_response_dict(page)
+
+
+@router.delete("/notes/{id}/pages/{page_id}", status_code=204, dependencies=WINDOW_AUTH)
+def delete_note_page(id: int, page_id: int, db: Session = Depends(get_db), force: bool = Query(False)):
+    page = db.query(NotePage).filter(NotePage.id == page_id, NotePage.note_id == id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Note page not found")
+    if not force and is_protected(page.tags):
+        raise HTTPException(status_code=403, detail="This note page is protected and cannot be deleted through normal means.")
+    db.delete(page)
+    db.commit()
+
+
+@router.post("/notes/{id}/make-permanent", response_model=NoteResponse, dependencies=WINDOW_AUTH)
+def make_note_permanent(id: int, db: Session = Depends(get_db)):
+    db_note = db.query(Note).filter(Note.id == id).first()
+    if not db_note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    content = extract_body(read_markdown(db_note.file_path)) if os.path.exists(db_note.file_path) else ""
+    db_note.tags = add_permanent_tags(db_note.tags)
+    db_note.updated_at = datetime.utcnow()
+    markdown = build_markdown(db_note.title, db_note.category, db_note.tags, db_note.created_at, db_note.updated_at, content)
+    save_markdown(db_note.file_path, markdown)
+    db.commit()
+    db.refresh(db_note)
+    return note_response_dict(db_note, content)
+
+
+@router.post("/notes/{id}/pages/{page_id}/make-permanent", response_model=NotePageResponse, dependencies=WINDOW_AUTH)
+def make_note_page_permanent(id: int, page_id: int, db: Session = Depends(get_db)):
+    page = db.query(NotePage).filter(NotePage.id == page_id, NotePage.note_id == id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Note page not found")
+    page.tags = add_permanent_tags(page.tags)
+    page.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(page)
+    return note_page_response_dict(page)
+
+@router.put("/notes/{id}", response_model=NoteResponse, dependencies=WINDOW_AUTH)
 def update_note(id: int, note_data: NoteBase, db: Session = Depends(get_db)):
     validate_category(note_data.category)
     normalized_tags = normalize_tags(note_data.tags)
@@ -210,6 +345,9 @@ def update_note(id: int, note_data: NoteBase, db: Session = Depends(get_db)):
     db_note = db.query(Note).filter(Note.id == id).first()
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
+
+    if is_protected(db_note.tags):
+        raise HTTPException(status_code=403, detail="This note is protected and cannot be edited.")
 
     old_file_path = db_note.file_path
     old_content = extract_body(read_markdown(old_file_path)) if os.path.exists(old_file_path) else ""
@@ -228,6 +366,9 @@ def update_note(id: int, note_data: NoteBase, db: Session = Depends(get_db)):
         db_note.category = note_data.category
     if tags_changed:
         db_note.tags = normalized_tags
+    if note_data.source is not None and db_note.source != note_data.source:
+        db_note.source = note_data.source
+        has_changes = True
 
     new_file_path = old_file_path
     if title_changed or category_changed:
@@ -254,18 +395,21 @@ def update_note(id: int, note_data: NoteBase, db: Session = Depends(get_db)):
     content = note_data.content if has_changes else old_content
     return note_response_dict(db_note, content)
 
-@router.delete("/notes/{id}")
-def delete_note(id: int, db: Session = Depends(get_db)):
+@router.delete("/notes/{id}", dependencies=WINDOW_AUTH)
+def delete_note(id: int, db: Session = Depends(get_db), force: bool = Query(False)):
     db_note = db.query(Note).filter(Note.id == id).first()
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
-    
+
+    if not force and is_protected(db_note.tags):
+        raise HTTPException(status_code=403, detail="This note is protected and cannot be deleted through normal means. Use `delete-permanent` via CLI.")
+
     delete_markdown(db_note.file_path)
     db.delete(db_note)
     db.commit()
     return {"detail": "Note deleted"}
 
-@router.get("/search")
+@router.get("/search", dependencies=WINDOW_AUTH)
 def search_notes(q: str = Query(...), db: Session = Depends(get_db)):
     notes = db.query(Note).all()
     notes_with_content = []
@@ -280,11 +424,11 @@ def search_notes(q: str = Query(...), db: Session = Depends(get_db)):
         for r in results
     ]
 
-@router.get("/export")
+@router.get("/export", dependencies=WINDOW_AUTH)
 def export_brain():
     # Ensure backups dir
-    if not os.path.exists("backups"):
-        os.makedirs("backups")
+    if not os.path.exists(BACKUPS_DIR):
+        os.makedirs(BACKUPS_DIR)
         
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
@@ -298,14 +442,14 @@ def export_brain():
                 file_path = os.path.join(root, file)
                 # Skip files larger than 10MB
                 if os.path.getsize(file_path) < 10 * 1024 * 1024:
-                    arcname = os.path.relpath(file_path, DATA_DIR)
+                    arcname = os.path.relpath(file_path, NOTES_DIR)
                     zip_file.write(file_path, arcname=os.path.join("notes", arcname))
                     
     zip_buffer.seek(0)
     
     # Save to backups for record (optional, but requested in plan)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = os.path.join("backups", f"brain_export_{timestamp}.zip")
+    backup_path = os.path.join(BACKUPS_DIR, f"brain_export_{timestamp}.zip")
     with open(backup_path, "wb") as f:
         f.write(zip_buffer.getvalue())
         
@@ -317,7 +461,7 @@ def export_brain():
         }
     )
 
-@router.post("/ask")
+@router.post("/ask", dependencies=WINDOW_AUTH)
 def ask_brain(request: AskRequest, db: Session = Depends(get_db)):
     notes = db.query(Note).all()
     notes_with_content = []
@@ -370,7 +514,8 @@ def _require_local_host(request: Request):
         )
 
 
-CORE_TOKENS: set = set()
+CORE_TOKENS: dict = {}
+TOKEN_LIFETIME = 1800
 CORE_ROOT = os.environ.get("MEGAMIND_CORE_ROOT", r"C:\Users\Sm1th\MegaMindCore")
 CORE_DB = os.path.join(CORE_ROOT, "private.db")
 CORE_NOTES_DIR = os.path.join(CORE_ROOT, "notes")
@@ -385,13 +530,15 @@ def _get_core_note_db():
 
 
 def _get_core_token(
-    token: Optional[str] = Query(None),
     x_core_token: Optional[str] = Header(None, alias="X-Core-Token")
 ) -> str:
-    actual = token or x_core_token
-    if not actual or actual not in CORE_TOKENS:
+    if not x_core_token or x_core_token not in CORE_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid or expired Core token")
-    return actual
+    expiry = CORE_TOKENS[x_core_token]
+    if time.time() > expiry:
+        del CORE_TOKENS[x_core_token]
+        raise HTTPException(status_code=401, detail="Core token expired")
+    return x_core_token
 
 
 class CoreUnlockRequest(BaseModel):
@@ -417,7 +564,7 @@ def core_unlock(core_request: CoreUnlockRequest, request: Request = Depends(_req
     if not hmac.compare_digest(computed, password_hash):
         raise HTTPException(status_code=401, detail="Invalid Core password")
     token = secrets.token_hex(32)
-    CORE_TOKENS.add(token)
+    CORE_TOKENS[token] = time.time() + TOKEN_LIFETIME
     return CoreUnlockResponse(unlocked=True, token=token)
 
 
@@ -476,3 +623,13 @@ def get_core_note(
         return note
     finally:
         conn.close()
+
+
+@router.post("/core/lock")
+def core_lock(
+    token: str = Depends(_get_core_token),
+    request: Request = Depends(_require_local_host)
+):
+    if token in CORE_TOKENS:
+        del CORE_TOKENS[token]
+    return {"unlocked": False, "message": "Core Space locked."}

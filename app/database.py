@@ -2,9 +2,8 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from .models import Base
+from .paths import DATA_DIR, DB_PATH
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-DB_PATH = os.path.join(DATA_DIR, "brain.db")
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(

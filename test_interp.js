@@ -1,0 +1,1 @@
+var code = ).replace(/'/g, "\; Function(code)(); console.log(" OK);

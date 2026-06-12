@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { Note, SearchResult } from '../types';
-import { formatNoteTime } from '../types';
+import { formatNoteTime, isPermanent } from '../types';
 import { api } from '../api';
 
 interface NoteListProps {
@@ -38,6 +38,16 @@ const NoteList: React.FC<NoteListProps> = ({ notes, onEdit, onView, onDelete, is
     }
   };
 
+  const handleMakePermanent = async (id: number) => {
+    setOpenMenuId(null);
+    try {
+      await api.makeNotePermanent(id);
+      onDelete();
+    } catch (err) {
+      alert('Failed to make note permanent');
+    }
+  };
+
   const handleView = async (item: Note | SearchResult) => {
     try {
       const fullNote = await api.fetchNote(item.id);
@@ -66,12 +76,13 @@ const NoteList: React.FC<NoteListProps> = ({ notes, onEdit, onView, onDelete, is
     const score = 'score' in item ? item.score : null;
     const category = item.category || '';
     const tags = item.tags || '';
+    const permanent = isPermanent(tags);
     const createdAt = 'created_at' in item ? item.created_at : null;
     const content = 'content' in item ? item.content || '' : '';
     const preview = 'preview' in item ? item.preview || '' : '';
 
     return (
-      <div key={noteId} className="note-card">
+      <div key={noteId} className="note-card" onClick={() => handleView(item)} style={{ cursor: 'pointer' }}>
         <div className="note-card-header">
           <div className="note-title">
             {title}
@@ -79,12 +90,20 @@ const NoteList: React.FC<NoteListProps> = ({ notes, onEdit, onView, onDelete, is
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span className="note-category-tag">{category}</span>
-            <div className="dropdown-wrapper" data-dropdown={noteId}>
+            <div className="dropdown-wrapper" data-dropdown={noteId} onClick={e => e.stopPropagation()}>
               <button className="btn-dots" onClick={() => setOpenMenuId(openMenuId === noteId ? null : noteId)}>···</button>
               {openMenuId === noteId && (
                 <div className="dropdown-menu">
-                  <div className="dropdown-item" onClick={() => handleEditClick(item)}>Edit</div>
-                  <div className="dropdown-item dropdown-danger" onClick={() => handleDelete(noteId)}>Delete</div>
+                  <div className="dropdown-item" onClick={() => handleView(item)}>View</div>
+                  {permanent ? (
+                    <div className="dropdown-item">Read-only</div>
+                  ) : (
+                    <>
+                      <div className="dropdown-item" onClick={() => handleEditClick(item)}>Edit</div>
+                      <div className="dropdown-item" onClick={() => handleMakePermanent(noteId)}>Make permanent</div>
+                      <div className="dropdown-item dropdown-danger" onClick={() => handleDelete(noteId)}>Delete</div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -100,7 +119,7 @@ const NoteList: React.FC<NoteListProps> = ({ notes, onEdit, onView, onDelete, is
         </div>
         <div className="note-actions">
           <span />
-          <button className="btn-view" onClick={() => handleView(item)}>
+          <button className="btn-view" onClick={e => { e.stopPropagation(); handleView(item); }}>
             View →
           </button>
         </div>

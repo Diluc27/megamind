@@ -89,10 +89,39 @@ See [AGENTS.md](AGENTS.md) for the full agent guide, [docs/agent-usage.md](docs/
 
 MegaMind uses a two-layer privacy architecture:
 
-- **Window Layer** — The current MegaMind system accessible through `tools/brain.py`. Agents can read, search, add, and update notes here.
-- **Core Layer** — A private storage layer (to be added later). Agents cannot access Core directly.
+- **Window Layer** — The main MegaMind system accessible through `tools/brain.py`. Agents can read, search, add, and update notes here.
+- **Core Layer** — A private read-only storage layer. Agents cannot access Core directly. Core stores full private Markdown notes migrated from the Window layer, with metadata tracked in `private.db`. The Core root is configured via the `MEGAMIND_CORE_ROOT` environment variable.
 
-Agents may request Core info release using `python tools/brain.py request-core`, but release only happens after explicit user approval. See [AGENTS.md](AGENTS.md) for the full privacy rules.
+### Core Access
+
+Core notes can be viewed from the frontend by switching to **Core Space** and entering the configured unlock password. Core is only accessible from the local PC (`127.0.0.1`). After unlock, a time-limited token grants read-only access to Core notes.
+
+### Core Release Workflow
+
+Agents may request Core info release using `python tools/brain.py request-core`, but release only happens after explicit user approval:
+1. Agent searches Window layer first.
+2. If not found, agent stops and informs the user.
+3. User may retry; agent can ask if release is wanted.
+4. If approved, agent runs `request-core` with topic and reason.
+5. User approves via `core.py release`.
+6. Released info enters Window as a new note tagged `core-release`.
+
+### Setup
+
+1. Set Core password hash:
+   ```bash
+   python -c "import hashlib; print(hashlib.sha256('YOUR_PASSWORD_HERE'.encode()).hexdigest())"
+   ```
+   Then set the environment variable:
+   ```powershell
+   $env:MEGAMIND_CORE_PASSWORD_HASH="<hash_from_command>"
+   ```
+   If not set, Core unlock returns HTTP 503.
+
+2. Optionally set Core root (defaults to the same machine's Core directory):
+   ```powershell
+   $env:MEGAMIND_CORE_ROOT="C:\path\to\your\Core"
+   ```
 
 ## Disclaimer
 - This app is meant for Markdown notes.

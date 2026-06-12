@@ -1,8 +1,41 @@
 import os
+import json
+from datetime import datetime, timedelta
 from slugify import slugify
+from .paths import DATA_DIR, NOTES_DIR, SESSIONS_DIR, BACKUPS_DIR
 
-DATA_DIR = "data"
-NOTES_DIR = os.path.join(DATA_DIR, "notes")
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+
+
+def load_settings():
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"working_context_ttl_days": 7, "allowed_ttl_days": [7, 14, 30]}
+
+
+def save_settings(settings):
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+def is_protected(tags):
+    if not tags:
+        return False
+    tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    return "protected" in tag_list or "memory-permanent" in tag_list
+
+
+def calculate_expiry_tag(ttl_days=None):
+    if ttl_days is None:
+        settings = load_settings()
+        ttl_days = settings.get("working_context_ttl_days", 7)
+    expiry = datetime.now() + timedelta(days=ttl_days)
+    return f"expires-{expiry.strftime('%Y-%m-%d')}"
+
 CATEGORIES = [
     "Projects", "Errors-Fixes", "Prompts", "Tools-Models",
     "Ideas", "Learning-Logs", "Commands"
@@ -10,7 +43,7 @@ CATEGORIES = [
 
 
 def ensure_dirs():
-    dirs = [DATA_DIR, NOTES_DIR, "backups"]
+    dirs = [DATA_DIR, NOTES_DIR, SESSIONS_DIR, BACKUPS_DIR]
     for cat in CATEGORIES:
         dirs.append(os.path.join(NOTES_DIR, cat))
 

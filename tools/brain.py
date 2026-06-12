@@ -8,12 +8,34 @@ import datetime
 from pathlib import Path
 
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
+
+
+def _load_env_file():
+    if not os.path.exists(ENV_PATH):
+        return
+    with open(ENV_PATH, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ[key.strip()] = value.strip().strip('"').strip("'")
+
+
+_load_env_file()
+
+
 API_BASE = os.environ.get("MEGAMIND_API_BASE", "http://127.0.0.1:8000/api")
 
 
 def _req(method, path, data=None):
     url = f"{API_BASE}{path}"
     headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("MEGAMIND_API_KEY")
+    if api_key:
+        headers["X-API-Key"] = api_key
     body = json.dumps(data).encode() if data else None
     r = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
@@ -532,7 +554,29 @@ def cmd_suggest_category(args):
     print(best)
 
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE = PROJECT_ROOT
+SETTINGS_PATH = os.path.join(BASE, "data", "settings.json")
+
+
+def _load_settings():
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"working_context_ttl_days": 7, "allowed_ttl_days": [7, 14, 30]}
+
+
+def _save_settings(settings):
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+def _is_note_protected(note):
+    tags = note.get("tags", "") or ""
+    tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    return "protected" in tag_list or "memory-permanent" in tag_list
 
 
 def _ensure_dirs():
@@ -578,6 +622,11 @@ def cmd_list_core_requests(args):
 
 
 def cmd_delete(args):
+    note = _req("GET", f"/notes/{args.id}")
+    if _is_note_protected(note):
+        print(f"Error: Note {args.id} ('{note['title']}') is protected and cannot be deleted.", file=sys.stderr)
+        print("Use `python tools/brain.py delete-permanent <id> --reason \"...\" --confirm` to force delete.", file=sys.stderr)
+        sys.exit(1)
     if not args.yes:
         resp = input(f"Delete note {args.id}? [y/N] ")
         if resp.lower() not in ("y", "yes"):
@@ -585,6 +634,442 @@ def cmd_delete(args):
             return
     _req("DELETE", f"/notes/{args.id}")
     print(f"Deleted note {args.id}.")
+
+
+def cmd_session_list():
+    sessions = _req("GET", "/sessions")
+    if not sessions:
+        print("No sessions found.")
+        return
+    for s in sessions:
+        agent = s.get("agent") or ""
+        project = s.get("project") or ""
+        tags = s.get("tags") or ""
+        print(f"{s['id']:>3}  {s['title']:<50}  {agent:<20}  {project:<20}  {tags}")
+
+
+def cmd_session_get(args):
+    s = _req("GET", f"/sessions/{args.id}")
+    print(f"Title:    {s['title']}")
+    print(f"Agent:    {s.get('agent', '')}")
+    print(f"Project:  {s.get('project', '')}")
+    print(f"Tags:     {s.get('tags', '')}")
+    print(f"Created:  {s.get('created_at', '')}")
+    print(f"Updated:  {s.get('updated_at', '')}")
+    print()
+    print(s.get("content", ""))
+
+
+def cmd_session_add(args):
+    content = _read_add_content(args)
+    body = {
+        "title": args.title,
+        "agent": args.agent or "",
+        "project": args.project or "",
+        "tags": args.tags or "",
+        "content": content,
+    }
+    s = _req("POST", "/sessions", body)
+    print(f"Created session {s['id']}: {s['title']}")
+
+
+def cmd_session_update(args):
+    body = {
+        "title": args.title,
+        "agent": args.agent or "",
+        "project": args.project or "",
+        "tags": args.tags or "",
+        "content": args.content,
+    }
+    s = _req("PUT", f"/sessions/{args.id}", body)
+    print(f"Updated session {s['id']}: {s['title']}")
+
+
+def cmd_session_delete(args):
+    s = _req("GET", f"/sessions/{args.id}")
+    if _is_note_protected(s):
+        print(f"Error: Session {args.id} ('{s['title']}') is protected and cannot be deleted.", file=sys.stderr)
+        print("Use `python tools/brain.py delete-permanent <id> --reason \"...\" --confirm` to force delete.", file=sys.stderr)
+        sys.exit(1)
+    if not args.yes:
+        resp = input(f"Delete session {args.id}? [y/N] ")
+        if resp.lower() not in ("y", "yes"):
+            print("Cancelled.")
+            return
+    _req("DELETE", f"/sessions/{args.id}")
+    print(f"Deleted session {args.id}.")
+
+
+def cmd_context_pack(args):
+    query = args.query.lower()
+    print(f"Context pack for: {args.query}")
+    print()
+
+    notes = _req("GET", "/search?" + urllib.parse.urlencode({"q": args.query}))
+    sessions = _req("GET", "/sessions/search?" + urllib.parse.urlencode({"q": args.query}))
+
+    print("=== Top Notes ===")
+    if notes:
+        for n in notes[:5]:
+            nid = n.get("id", "?")
+            score = n.get("score", 0)
+            preview = (n.get("preview") or "")[:150]
+            print(f"  [{nid}] Score:{score} | {n['title']}")
+            if preview:
+                print(f"       {preview}")
+            print()
+    else:
+        print("  (none)")
+        print()
+
+    print("=== Top Sessions ===")
+    if sessions:
+        for s in sessions[:5]:
+            sid = s.get("id", "?")
+            score = s.get("score", 0)
+            preview = (s.get("preview") or "")[:150]
+            print(f"  (S{sid}) Score:{score} | {s['title']}")
+            if preview:
+                print(f"         {preview}")
+            print()
+    else:
+        print("  (none)")
+        print()
+
+    print("=== Registry Reference ===")
+    try:
+        reg = _req("GET", "/sessions/2")
+        print(f"  Session Registry Index is session 2 ({reg.get('title','')})")
+        print("  Use `python tools/brain.py session-search \"<topic>\"` to find sessions by keyword.")
+    except SystemExit:
+        print("  (could not load registry)")
+
+    print()
+    print("=== Quick Commands ===")
+    print(f"  python tools/brain.py search \"{args.query}\"")
+    print(f"  python tools/brain.py session-search \"{args.query}\"")
+    print("  python tools/brain.py topics")
+    print("  python tools/brain.py session-list")
+
+
+def cmd_daily_log(args):
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    date_tag = f"date-{today}"
+    now = datetime.datetime.now().strftime("%H:%M")
+    entry_text = args.append or ""
+
+    settings = _load_settings()
+    ttl = settings.get("working_context_ttl_days", 7)
+    expiry = (datetime.date.today() + datetime.timedelta(days=ttl)).strftime("%Y-%m-%d")
+    expiry_tag = f"expires-{expiry}"
+    retention_tag = f"retention-{ttl}d"
+
+    # Daily work summaries now live in MegaCode (Sessions), not Window notes.
+    q = urllib.parse.urlencode({"q": date_tag})
+    results = _req("GET", f"/sessions/search?{q}")
+
+    existing = None
+    if results:
+        for r in results:
+            tags = r.get("tags", "") or ""
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            if date_tag in tag_list and "daily-work" in tag_list and "daily-log-rollup" not in tag_list:
+                existing = r
+                break
+
+    if args.show:
+        if existing:
+            session = _req("GET", f"/sessions/{existing['id']}")
+            print(f"Daily Work Session ({existing['id']}): {existing['title']}")
+            print()
+            print(session.get("content", ""))
+        else:
+            print(f"No MegaCode daily work session for {today} yet.")
+        return
+
+    if not entry_text:
+        print("Error: Use --append \"text\" to add an entry, or --show to view.")
+        return
+
+    if existing:
+        session = _req("GET", f"/sessions/{existing['id']}")
+        content = session.get("content", "")
+        title = session.get("title", "")
+
+        tags = session.get("tags", "") or ""
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        for required_tag in ["daily-work", "megacode", "session-log", "memory-working", expiry_tag, retention_tag]:
+            if required_tag not in tag_list:
+                tag_list.append(required_tag)
+
+        entry = f"\n### {now} \u2014 {entry_text}\n"
+        new_content = content.rstrip() + entry
+
+        body = {
+            "title": title,
+            "agent": session.get("agent") or "OpenCode",
+            "project": session.get("project") or "MegaMind",
+            "tags": ",".join(tag_list),
+            "content": new_content,
+        }
+        updated = _req("PUT", f"/sessions/{existing['id']}", body)
+        print(f"Appended to MegaCode daily work session ({updated['id']}): {title}")
+    else:
+        title = args.title or f"Work {today}"
+        content = f"## MegaMind \u2014 {today}\n\n### {now} \u2014 {entry_text}\n"
+        tags = f"daily-work,megacode,session-log,{date_tag},memory-working,{expiry_tag},{retention_tag}"
+
+        body = {
+            "title": title,
+            "agent": "OpenCode",
+            "project": "MegaMind",
+            "tags": tags,
+            "content": content,
+        }
+        session = _req("POST", "/sessions", body)
+        print(f"Created MegaCode daily work session ({session['id']}): {title}")
+
+
+def cmd_session_search(args):
+    q = urllib.parse.urlencode({"q": args.query})
+    results = _req("GET", f"/sessions/search?{q}")
+    if not results:
+        print("No matching sessions found.")
+        return
+    for r in results:
+        score = r.get("score", 0)
+        agent = r.get("agent") or ""
+        project = r.get("project") or ""
+        print(f"ID: {r.get('id', '?')} | Score: {score} | {r['title']} (Agent: {agent}, Project: {project})")
+        preview = (r.get("preview") or "")[:120]
+        if preview:
+            print(f"   {preview}")
+        print()
+
+
+def cmd_shelfd_list():
+    items = _req("GET", "/shelfd")
+    if not items:
+        print("No Shelfd items found.")
+        return
+    for s in items:
+        tags = s.get("tags") or ""
+        print(f"{s['id']:>3}  {s['title']:<50}  {tags}")
+
+
+def cmd_shelfd_get(args):
+    s = _req("GET", f"/shelfd/{args.id}")
+    print(f"Title:    {s['title']}")
+    print(f"Tags:     {s.get('tags', '')}")
+    print(f"Created:  {s.get('created_at', '')}")
+    print(f"Updated:  {s.get('updated_at', '')}")
+    print()
+    print(s.get("content", ""))
+
+
+def cmd_shelfd_add(args):
+    content = _read_add_content(args)
+    body = {
+        "title": args.title,
+        "tags": args.tags or "",
+        "content": content,
+    }
+    s = _req("POST", "/shelfd", body)
+    print(f"Created Shelfd item {s['id']}: {s['title']}")
+
+
+def cmd_shelfd_update(args):
+    body = {
+        "title": args.title,
+        "tags": args.tags or "",
+        "content": args.content,
+    }
+    s = _req("PUT", f"/shelfd/{args.id}", body)
+    print(f"Updated Shelfd item {s['id']}: {s['title']}")
+
+
+def cmd_shelfd_delete(args):
+    s = _req("GET", f"/shelfd/{args.id}")
+    if _is_note_protected(s):
+        print(f"Error: Shelfd item {args.id} ('{s['title']}') is protected and cannot be deleted.", file=sys.stderr)
+        print("Use `python tools/brain.py delete-permanent <id> --reason \"...\" --confirm` to force delete.", file=sys.stderr)
+        sys.exit(1)
+    if not args.yes:
+        resp = input(f"Delete Shelfd item {args.id}? [y/N] ")
+        if resp.lower() not in ("y", "yes"):
+            print("Cancelled.")
+            return
+    _req("DELETE", f"/shelfd/{args.id}")
+    print(f"Deleted Shelfd item {args.id}.")
+
+
+def cmd_shelfd_search(args):
+    q = urllib.parse.urlencode({"q": args.query})
+    results = _req("GET", f"/shelfd/search?{q}")
+    if not results:
+        print("No matching Shelfd items found.")
+        return
+    for r in results:
+        score = r.get("score", 0)
+        print(f"ID: {r.get('id', '?')} | Score: {score} | {r['title']}")
+        preview = (r.get("preview") or "")[:120]
+        if preview:
+            print(f"   {preview}")
+        print()
+
+
+def cmd_retention_settings(args):
+    settings = _load_settings()
+    if args.set is not None:
+        new_ttl = args.set
+        allowed = settings.get("allowed_ttl_days", [7, 14, 30])
+        if new_ttl not in allowed:
+            print(f"Error: TTL must be one of {allowed} days.", file=sys.stderr)
+            sys.exit(1)
+        settings["working_context_ttl_days"] = new_ttl
+        _save_settings(settings)
+        print(f"Working context TTL updated to {new_ttl} days.")
+        print("New daily logs and working context notes will use this expiry.")
+        print("Existing notes keep their original expiry dates.")
+        return
+    print(f"Working context TTL: {settings.get('working_context_ttl_days', 7)} days")
+    print(f"Allowed values: {settings.get('allowed_ttl_days', [7, 14, 30])}")
+
+
+def _find_expired(items):
+    now = datetime.date.today()
+    expired = []
+    for item in items:
+        tags = item.get("tags", "") or ""
+        tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+        if "memory-working" not in tag_list:
+            continue
+        for t in tag_list:
+            if t.startswith("expires-"):
+                try:
+                    expiry = datetime.datetime.strptime(t.split("expires-")[1], "%Y-%m-%d").date()
+                    if expiry < now:
+                        expired.append(item)
+                except ValueError:
+                    pass
+    return expired
+
+
+def cmd_prune_expired(args):
+    notes = _req("GET", "/notes")
+    sessions = _req("GET", "/sessions")
+
+    expired_notes = _find_expired(notes)
+    expired_sessions = _find_expired(sessions)
+    total = len(expired_notes) + len(expired_sessions)
+
+    if total == 0:
+        print("No expired working context notes or sessions found.")
+        return
+
+    print(f"Found {len(expired_notes)} expired note(s) and {len(expired_sessions)} expired session(s):")
+    for n in expired_notes:
+        print(f"  Note [{n['id']}] {n['title']}  ({n.get('tags', '')})")
+    for s in expired_sessions:
+        print(f"  Session [{s['id']}] {s['title']}  ({s.get('tags', '')})")
+
+    if args.dry_run:
+        print()
+        print(f"DRY RUN: {total} item(s) would be pruned.")
+        print("Run with `--apply` to delete them.")
+        return
+
+    if not args.apply:
+        print()
+        print("Use `--dry-run` to preview or `--apply` to delete expired items.")
+        return
+
+    print()
+    for n in expired_notes:
+        _req("DELETE", f"/notes/{n['id']}?force=true")
+        print(f"  Pruned note {n['id']}: {n['title']}")
+    for s in expired_sessions:
+        _req("DELETE", f"/sessions/{s['id']}?force=true")
+        print(f"  Pruned session {s['id']}: {s['title']}")
+    print(f"Pruned {total} expired item(s).")
+
+
+def cmd_delete_permanent(args):
+    spaces = [args.space] if args.space != "auto" else ["notes", "sessions", "claud"]
+    endpoints = {
+        "notes": ("note", f"/notes/{args.id}"),
+        "sessions": ("session", f"/sessions/{args.id}"),
+        "claud": ("Claud note", f"/claud/{args.id}"),
+    }
+
+    note = None
+    label = None
+    endpoint = None
+    for space in spaces:
+        label, endpoint = endpoints[space]
+        try:
+            note = _req("GET", endpoint)
+            break
+        except SystemExit:
+            note = None
+
+    if note is None or label is None or endpoint is None:
+        target = "note, session, or Claud note" if args.space == "auto" else endpoints[args.space][0]
+        print(f"Error: No {target} with ID {args.id} found.", file=sys.stderr)
+        sys.exit(1)
+
+    is_protected = _is_note_protected(note)
+
+    print(f"WARNING: You are about to permanently delete a {label}:")
+    print(f"  ID: {note['id']}")
+    print(f"  Title: {note['title']}")
+    print(f"  Tags: {note.get('tags', '')}")
+    if is_protected:
+        print(f"  (This {label} is PROTECTED)")
+    print(f"  Reason: {args.reason}")
+    print()
+
+    if not args.confirm:
+        resp = input(f"Are you sure? Type 'yes' to permanently delete: ")
+        if resp.lower() != "yes":
+            print("Cancelled.")
+            return
+
+    force_param = "?force=true"
+    _req("DELETE", f"{endpoint}{force_param}")
+    print(f"Permanently deleted {label} {args.id}: {note['title']}")
+
+
+def cmd_rollup_daily_log(args):
+    target_date = args.date
+    date_tag = f"date-{target_date}"
+    q = urllib.parse.urlencode({"q": date_tag})
+    results = _req("GET", f"/search?{q}")
+
+    daily_note = None
+    if results:
+        for r in results:
+            tags = r.get("tags", "") or ""
+            if date_tag in tags:
+                daily_note = r
+                break
+
+    if not daily_note:
+        print(f"Error: No daily log found for {target_date}.", file=sys.stderr)
+        sys.exit(1)
+
+    full = _req("GET", f"/notes/{daily_note['id']}")
+    summary = f"## Rollup: {full['title']}\n{full.get('content', '')}"
+
+    body = {
+        "title": f"Daily Log Rollup \u2014 {target_date}",
+        "category": "Learning-Logs",
+        "tags": f"memory-permanent,protected,daily-log-rollup,{date_tag}",
+        "content": summary,
+    }
+    result = _req("POST", "/notes", body)
+    print(f"Created permanent rollup note {result['id']}: {result['title']}")
+    print("The original daily log can now be pruned or kept until expiry.")
 
 
 def main():
@@ -644,6 +1129,81 @@ def main():
 
     p_lst = sub.add_parser("list-core-requests", help="List pending core release requests")
 
+    # ---- Session commands ----
+    p_sl = sub.add_parser("session-list", help="List all sessions")
+
+    p_sg = sub.add_parser("session-get", help="Get a session by ID")
+    p_sg.add_argument("id", type=int)
+
+    p_sa = sub.add_parser("session-add", help="Create a new session")
+    p_sa.add_argument("--title", required=True)
+    p_sa.add_argument("--agent", default="")
+    p_sa.add_argument("--project", default="")
+    p_sa.add_argument("--tags", default="")
+    p_sa.add_argument("--content")
+    p_sa.add_argument("--content-file")
+    p_sa.add_argument("--stdin-content", action="store_true")
+
+    p_su = sub.add_parser("session-update", help="Update a session by ID")
+    p_su.add_argument("id", type=int)
+    p_su.add_argument("--title", required=True)
+    p_su.add_argument("--agent", default="")
+    p_su.add_argument("--project", default="")
+    p_su.add_argument("--tags", default="")
+    p_su.add_argument("--content", required=True)
+
+    p_sd = sub.add_parser("session-delete", help="Delete a session")
+    p_sd.add_argument("id", type=int)
+    p_sd.add_argument("--yes", action="store_true", help="Skip confirmation")
+
+    p_cp = sub.add_parser("context-pack", help="Compact project context from notes + sessions")
+    p_cp.add_argument("query", help="Project name or topic")
+
+    p_dl = sub.add_parser("daily-log", help="Append to or show today's daily work log")
+    p_dl.add_argument("--append", help="Text entry to append")
+    p_dl.add_argument("--title", help="Title for new daily log (only used on first entry of the day)")
+    p_dl.add_argument("--show", action="store_true", help="Show today's log without appending")
+
+    p_ss = sub.add_parser("session-search", help="Search sessions")
+    p_ss.add_argument("query", help="Search query")
+
+    p_sfl = sub.add_parser("shelfd-list", help="List all Shelfd items")
+    p_sfg = sub.add_parser("shelfd-get", help="Get a Shelfd item by ID")
+    p_sfg.add_argument("id", type=int)
+    p_sfa = sub.add_parser("shelfd-add", help="Create a new Shelfd item")
+    p_sfa.add_argument("--title", required=True)
+    p_sfa.add_argument("--tags", default="")
+    p_sfa.add_argument("--content")
+    p_sfa.add_argument("--content-file")
+    p_sfa.add_argument("--stdin-content", action="store_true")
+    p_sfu = sub.add_parser("shelfd-update", help="Update a Shelfd item by ID")
+    p_sfu.add_argument("id", type=int)
+    p_sfu.add_argument("--title", required=True)
+    p_sfu.add_argument("--tags", default="")
+    p_sfu.add_argument("--content", required=True)
+    p_sfd = sub.add_parser("shelfd-delete", help="Delete a Shelfd item")
+    p_sfd.add_argument("id", type=int)
+    p_sfd.add_argument("--yes", action="store_true", help="Skip confirmation")
+    p_sfs = sub.add_parser("shelfd-search", help="Search Shelfd items")
+    p_sfs.add_argument("query", help="Search query")
+
+    p_rs = sub.add_parser("retention-settings", help="Show or change working context retention TTL")
+    p_rs.add_argument("--set", type=int, default=None, help="Set TTL in days (7, 14, or 30)")
+    p_rs.add_argument("--show", action="store_true", help="Show current retention settings")
+
+    p_pe = sub.add_parser("prune-expired", help="Prune expired working context notes")
+    p_pe.add_argument("--dry-run", action="store_true", help="Preview what would be pruned")
+    p_pe.add_argument("--apply", action="store_true", help="Actually delete expired notes")
+
+    p_dp = sub.add_parser("delete-permanent", help="Permanently delete a protected note, session, or Claud note")
+    p_dp.add_argument("id", type=int, help="Note, session, or Claud note ID")
+    p_dp.add_argument("--space", choices=["auto", "notes", "sessions", "claud"], default="auto", help="Storage space to target")
+    p_dp.add_argument("--reason", required=True, help="Reason for permanent deletion")
+    p_dp.add_argument("--confirm", action="store_true", help="Skip confirmation prompt")
+
+    p_rd = sub.add_parser("rollup-daily-log", help="Rollup a daily log into permanent knowledge")
+    p_rd.add_argument("--date", required=True, help="Date in YYYY-MM-DD format")
+
     args = parser.parse_args()
 
     if args.command == "health":
@@ -676,6 +1236,42 @@ def main():
         cmd_list_core_requests(args)
     elif args.command == "delete":
         cmd_delete(args)
+    elif args.command == "session-list":
+        cmd_session_list()
+    elif args.command == "session-get":
+        cmd_session_get(args)
+    elif args.command == "session-add":
+        cmd_session_add(args)
+    elif args.command == "session-update":
+        cmd_session_update(args)
+    elif args.command == "session-delete":
+        cmd_session_delete(args)
+    elif args.command == "context-pack":
+        cmd_context_pack(args)
+    elif args.command == "daily-log":
+        cmd_daily_log(args)
+    elif args.command == "session-search":
+        cmd_session_search(args)
+    elif args.command == "shelfd-list":
+        cmd_shelfd_list()
+    elif args.command == "shelfd-get":
+        cmd_shelfd_get(args)
+    elif args.command == "shelfd-add":
+        cmd_shelfd_add(args)
+    elif args.command == "shelfd-update":
+        cmd_shelfd_update(args)
+    elif args.command == "shelfd-delete":
+        cmd_shelfd_delete(args)
+    elif args.command == "shelfd-search":
+        cmd_shelfd_search(args)
+    elif args.command == "retention-settings":
+        cmd_retention_settings(args)
+    elif args.command == "prune-expired":
+        cmd_prune_expired(args)
+    elif args.command == "delete-permanent":
+        cmd_delete_permanent(args)
+    elif args.command == "rollup-daily-log":
+        cmd_rollup_daily_log(args)
     else:
         parser.print_help()
 

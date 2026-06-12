@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MegaMind Claude Tracker Options</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main class="options-shell">
+      <section class="card">
+        <h1>MegaMind Claude Tracker</h1>
+        <p class="lede">Configure the local MegaMind backend connection used by popup tiles and pause summaries.</p>
+
+        <form id="options-form">
+          <label for="api-base">MegaMind API Base</label>
+          <input id="api-base" name="apiBase" type="url" placeholder="http://127.0.0.1:8000" autocomplete="off">
+
+          <label for="api-key">MegaMind API Key</label>
+          <input id="api-key" name="apiKey" type="password" placeholder="X-API-Key" autocomplete="off">
+
+          <div class="actions">
+            <button id="save-button" type="submit">Save</button>
+            <button id="test-button" class="secondary" type="button">Test Connection</button>
+          </div>
+        </form>
+
+        <p id="status-message" class="status-message" role="status"></p>
+      </section>
+    </main>
+
+    <script src="shared/megamind.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

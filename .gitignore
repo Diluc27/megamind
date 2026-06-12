@@ -25,6 +25,7 @@ frontend-src-ui-backup.zip
 
 # Logs / output
 *.log
+.megawork_window.name
 *_output.txt
 search_file_test_output.txt
 test_long_note.txt
