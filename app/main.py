@@ -4,6 +4,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .database import DB_PATH, init_db
 from .auth import require_api_key
+from .security import LocalOnlyGuard
 from .utils import build_markdown, ensure_dirs, get_safe_filename, save_markdown
 from .routes import router
 from .session_routes import router as session_router
@@ -45,6 +46,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(LocalOnlyGuard)
 
 
 def _ensure_shelfd_structuring_columns():

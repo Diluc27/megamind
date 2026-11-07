@@ -2,7 +2,7 @@
   'use strict';
 
   const DEFAULT_API_BASE = 'http://127.0.0.1:8000';
-  const DEFAULT_API_KEY = 'xK9mP2nQvR8tL5wJ3hF7yD4cA6bE1iN0';
+  const DEFAULT_API_KEY = '';
   const STORAGE_KEYS = {
     apiBase: 'megamindApiBase',
     apiKey: 'megamindApiKey',
